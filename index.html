@@ -587,10 +587,16 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     clearTimeout(watchdog);
     if (attempts.length) { startAttempt(attempts.shift()); return; }   // siguiente intento (proxy, otro formato…)
     destroyEngines(); gen++;
-    const mixed = location.protocol === 'https:' && /^http:/i.test(c.url);
-    $('msgText').textContent = mixed
-      ? 'La página usa HTTPS y este canal usa HTTP, así que el navegador lo bloquea. Abre este archivo HTML desde tu disco o usa un canal HTTPS.'
-      : 'El canal está caído, el formato no es compatible (RTMP, RTSP, códec del móvil…) o el servidor bloquea el acceso.' + (PROXY_URL ? '' : ' Configura el proxy para saltarte el bloqueo CORS.') + (trace.length ? '\n\nDetalle: ' + trace.join(' | ') : '');
+    // El aviso de HTTP/HTTPS solo aplica si no hay proxy: con proxy, el navegador sí puede abrir canales http.
+    const mixed = location.protocol === 'https:' && /^http:/i.test(c.url) && !PROXY_URL;
+    const geo = /geo-?blocked/i.test(c.name);
+    let txt = mixed
+      ? 'La página usa HTTPS y este canal usa HTTP, así que el navegador lo bloquea. Configura el proxy, abre este archivo HTML desde tu disco o usa un canal HTTPS.'
+      : 'El canal está caído, el formato no es compatible (RTMP, RTSP, códec del móvil…) o el servidor bloquea el acceso.' +
+        (PROXY_URL ? '' : ' Configura el proxy para saltarte el bloqueo CORS.');
+    if (geo) txt += '\n\nEste canal está marcado como bloqueado por país: solo funciona desde el país indicado en su nombre.';
+    if (trace.length) txt += '\n\nDetalle: ' + trace.join(' | ');
+    $('msgText').textContent = txt;
     $('msg').hidden = false; busy(false);
     failStreak++;
     if ($('autoskip').checked && failStreak < Math.min(all.length, 25)) {
