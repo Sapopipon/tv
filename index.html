@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
+<meta name="referrer" content="no-referrer">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reproductor M3U</title>
@@ -209,6 +210,7 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
       <button class="src" id="srcOwn" aria-pressed="false">Mi lista</button>
       <button class="src own" id="ownBtn">Cargar mi propia lista (en Mi lista)</button>
       <button class="src" id="tvBtn" aria-pressed="false" title="Modo TV (control remoto)">TV</button>
+      <button class="src" id="diagBtn">Diagnóstico</button>
     </div>
 
 
@@ -253,6 +255,10 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     <div class="err" id="mErr" role="alert"></div>
     <div class="row end"><button class="btn" id="mClose">Cerrar</button></div>
   </div>
+</div>
+<div id="diagBox" hidden style="position:fixed;inset:0;z-index:99;background:#0b0f14;color:#e6edf3;padding:14px;overflow:auto">
+  <button class="btn" id="diagClose">Cerrar</button>
+  <pre id="diagOut" style="white-space:pre-wrap;word-break:break-word;font:12px/1.5 monospace;margin-top:10px"></pre>
 </div>
 <script>
 (() => {
@@ -891,6 +897,52 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
   $('srcLista2').onclick = () => selectSource('lista2');
 
   // Carga automática
+  /* ---------- Diagnóstico (botón "Diagnóstico") ---------- */
+  const diagBox = $('diagBox'), diagOut = $('diagOut');
+  const dlog = t => { diagOut.textContent += t + '\n'; };
+  const TEST_URL = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+
+  function testHls(url, useWorker, ms) {
+    return new Promise(resolve => {
+      if (!(window.Hls && Hls.isSupported())) return resolve('hls.js no disponible');
+      const v = document.createElement('video'); v.muted = true; v.playsInline = true;
+      const h = new Hls({ enableWorker: useWorker });
+      let done = false, t = null;
+      const end = r => { if (done) return; done = true; clearTimeout(t); try { h.destroy(); } catch (e) {} resolve(r); };
+      t = setTimeout(() => end('sin reproducir tras ' + (ms / 1000) + ' s (readyState ' + v.readyState + ')'), ms);
+      v.addEventListener('loadeddata', () => end('OK (carga datos de video)'));
+      h.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) end('error: ' + d.type + ' / ' + d.details + (d.response && d.response.code ? ' HTTP ' + d.response.code : '')); });
+      h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(e => dlog('  play() rechazado: ' + e.name)));
+      h.loadSource(url); h.attachMedia(v);
+    });
+  }
+
+  async function runDiag() {
+    diagOut.textContent = ''; diagBox.hidden = false;
+    dlog('Navegador: ' + navigator.userAgent);
+    dlog('Página: ' + location.protocol + '//' + (location.host || '(local)'));
+    dlog('hls.js: ' + (window.Hls ? 'cargado v' + (Hls.version || '?') + ', soportado=' + Hls.isSupported() : 'NO cargó'));
+    dlog('mpegts.js: ' + (window.mpegts ? 'cargado, soportado=' + mpegts.isSupported() : 'NO cargó'));
+    dlog('MediaSource: ' + !!window.MediaSource + ' | ManagedMediaSource: ' + !!window.ManagedMediaSource);
+    dlog('Worker: ' + !!window.Worker + ' | DecompressionStream: ' + !!window.DecompressionStream);
+    dlog('HLS nativo: ' + (video.canPlayType('application/vnd.apple.mpegurl') || 'no'));
+    dlog('En línea: ' + navigator.onLine + ' | Proxy configurado: ' + (PROXY_URL ? 'sí' : 'no'));
+    dlog('\n--- Descargas ---');
+    const f = async (label, u) => {
+      try { const r = await fetch(u); const t = await r.text(); dlog(label + ': HTTP ' + r.status + ' · ' + t.slice(0, 12).replace(/\s+/g, ' ')); }
+      catch (e) { dlog(label + ': FALLA (' + e.message + ')'); }
+    };
+    await f('Directa', TEST_URL);
+    if (PROXY_URL) await f('Por proxy', viaProxy(TEST_URL));
+    dlog('\n--- Reproducción de prueba (hasta 12 s cada una) ---');
+    const src = PROXY_URL ? viaProxy(TEST_URL) : TEST_URL;
+    dlog('hls.js con worker: ' + await testHls(src, true, 12000));
+    dlog('hls.js sin worker: ' + await testHls(src, false, 12000));
+    dlog('\nListo. Mándame una captura de esta pantalla.');
+  }
+  $('diagBtn').onclick = runDiag;
+  $('diagClose').onclick = () => { diagBox.hidden = true; };
+
   selectSource('online');
 })();
 </script>
