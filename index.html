@@ -3,13 +3,17 @@
 <head>
 <meta name="referrer" content="no-referrer">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Reproductor">
 <title>Reproductor M3U</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js" async></script>
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js" async></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js" async></script>
 <style>
 :root{
   --bg:#E8ECF1; --surface:#FFFFFF; --ink:#16202D; --muted:#5B6878;
@@ -380,11 +384,13 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     const expected = +el.dataset.len;
     if (expected && b64.length !== expected)
       throw new Error('El archivo HTML llegó incompleto (' + b64.length + ' de ' + expected + ' caracteres). Vuelve a copiarlo o súbelo completo a la app.');
-    if (!window.DecompressionStream) throw new Error('Este navegador no puede descomprimir la lista integrada.');
+    const nativeGz = !!(window.DecompressionStream && window.Blob && Blob.prototype.stream);
+    if (!nativeGz && !window.pako) throw new Error('Este navegador no puede descomprimir la lista integrada.');
     let bin;
     try { bin = atob(b64); } catch (e) { throw new Error('Los datos de ' + nombre + ' están dañados. Vuelve a copiar el archivo completo.'); }
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    if (!nativeGz) return new TextDecoder('utf-8').decode(window.pako.ungzip(bytes));   // TV / iPhone antiguos
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
     return await new Response(stream).text();
   }
@@ -504,24 +510,38 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     if (tsPlayer) { try { tsPlayer.destroy(); } catch (e) {} tsPlayer = null; }
   }
 
+  // iPhone/iPad: Safari reproduce HLS de forma nativa (no usa hls.js).
+  const IS_APPLE_MOBILE = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
   // Lista de intentos para un canal: primero directo, luego por el proxy.
   function buildAttempts(c) {
     const u = c.url, hd = { ua: c.ua, ref: c.ref }, needsHeaders = !!(c.ua || c.ref);
     const xtreamTs = /\/live\/[^/]+\/[^/]+\/[^/?]+\.ts(\?.*)?$/i.test(u);
     const asM3u8 = xtreamTs ? u.replace(/\.ts(\?.*)?$/i, '.m3u8') : u;
+    const nativeHls = !!video.canPlayType('application/vnd.apple.mpegurl');
+    const mseOk = !!(window.Hls && Hls.isSupported());
     const out = [];
-    // Si el canal exige Referer/User-Agent, la conexión directa no puede enviarlos: se va directo al proxy.
     const add = (kind, url) => {
-      if (!(needsHeaders && PROXY_URL)) out.push({ kind, url });
+      // Se omite la conexión directa cuando no puede funcionar: el canal exige Referer/User-Agent,
+      // o es http:// dentro de una página https:// (el navegador lo bloquea).
+      const blocked = (needsHeaders || (location.protocol === 'https:' && /^http:/i.test(url))) && PROXY_URL;
+      if (!blocked) out.push({ kind, url });
       if (PROXY_URL) out.push({ kind, url: viaProxy(url, hd) });
     };
     if (/m3u8/i.test(asM3u8)) {
-      add('hls', asM3u8);
-      if (xtreamTs) add('ts', u);          // si no hay .m3u8, prueba el TS directo con mpegts.js
+      if (IS_APPLE_MOBILE && nativeHls) {
+        add('native', asM3u8);                         // iPhone/iPad: reproductor nativo
+        if (mseOk) add('hls', asM3u8);
+      } else {
+        add('hls', asM3u8);
+        if (nativeHls && mseOk) add('native', asM3u8); // último recurso: reproductor del navegador/TV
+      }
+      if (xtreamTs) add('ts', u);                      // si no hay .m3u8, prueba el TS directo
     } else if (/\.(mp4|m4v|webm|mov|mp3|aac|ogg)(\?|$)/i.test(u)) {
       add('native', u);
     } else {
-      add('ts', u);                        // TS en vivo (también enlaces sin extensión)
+      add('ts', u);                                    // TS en vivo (también enlaces sin extensión)
     }
     return out;
   }
@@ -745,7 +765,8 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
 
   document.addEventListener('keydown', e => {
     if (!tv) return;
-    const k = e.key, c = e.keyCode, a = document.activeElement;
+    const k = (e.key && e.key !== 'Unidentified') ? e.key : (({ 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 13: 'Enter' })[e.keyCode] || ''),
+      c = e.keyCode, a = document.activeElement;
     const typing = a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox';
     const inFs = !!fsElement();
 
@@ -933,6 +954,7 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     dlog('Worker: ' + !!window.Worker + ' | DecompressionStream: ' + !!window.DecompressionStream);
     dlog('HLS nativo: ' + (video.canPlayType('application/vnd.apple.mpegurl') || 'no'));
     dlog('En línea: ' + navigator.onLine + ' | Proxy configurado: ' + (PROXY_URL ? 'sí' : 'no'));
+    dlog('iPhone/iPad: ' + IS_APPLE_MOBILE + ' | pako (gzip de respaldo): ' + !!window.pako);
     dlog('\n--- Descargas ---');
     const f = async (label, u) => {
       try { const r = await fetch(u); const t = await r.text(); dlog(label + ': HTTP ' + r.status + ' · ' + t.slice(0, 12).replace(/\s+/g, ' ')); }
