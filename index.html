@@ -423,8 +423,30 @@ body.tv .screen:focus{outline:5px solid var(--accent);outline-offset:3px}
     const id = key === 'online' ? 'myPlaylist1Gz' : 'myPlaylistGz';
     const nm = key === 'online' ? 'Lista 1' : 'Py';
     showEmpty('Cargando lista…');
-    readEmbedded(id, nm).then(t => loadText(t, '', key))
-      .catch(e => showEmpty('No se pudo abrir ' + nm, e.message, true));
+    readEmbedded(id, nm).then(async t => {
+      if (key === 'online') {
+        // Lista 1 incluye también los canales de Lista 2 (sin repetir). Sin internet, queda solo la lista integrada.
+        try { t = mergeLists(t, await fetchList(LISTA2_URL)); } catch (e) { /* sin conexión */ }
+      }
+      loadText(t, '', key);
+    }).catch(e => showEmpty('No se pudo abrir ' + nm, e.message, true));
+  }
+
+  // Une dos listas M3U conservando todo el texto (incluidas las líneas #EXTVLCOPT) y sin repetir direcciones.
+  function mergeLists(a, b) {
+    const seen = new Set(a.split(/\r?\n/).map(l => l.trim()).filter(l => l && l[0] !== '#'));
+    const out = [a.trim()];
+    let block = [];
+    for (const raw of b.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+      const l = raw.trim();
+      if (!l || /^#EXTM3U/i.test(l)) continue;
+      block.push(l);
+      if (l[0] !== '#') {
+        if (!seen.has(l)) { seen.add(l); out.push(block.join('\n')); }
+        block = [];
+      }
+    }
+    return out.join('\n');
   }
 
   /* ---------- Lista y filtros ---------- */
